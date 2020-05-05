@@ -1,0 +1,22 @@
+name: 'Test'
+
+on:
+  push:
+
+jobs:
+  test:
+    name: Running Tests
+    runs-on: ubuntu-latest
+    
+    # Setup a local mongodb instance.
+    services:
+      mongodb:
+        image: mongo:4.2-bionic
+        ports:
+        - 27017:27017
+      
+    steps:
+    - name: 'Checking out repo'
+      uses: actions/checkout@v2
+    
+    - run: swift test --enable-test-discovery
