@@ -97,8 +97,14 @@ class MongoQueue: Queue {
         }
     }
     
+    // Mark jobs that can't be finished as ready.
     func push(_ id: JobIdentifier) -> EventLoopFuture<Void> {
-        context.eventLoop.future()
+        mongodb["vapor_queue"]
+        .findAndModify(where: ["queue": "\(context.queueName.string)",
+                               "status": "processing"],
+                       update: ["$set": ["status": MongoJobStatus.ready.rawValue]])
+        .execute()
+        .transform(to: ())
     }
 }
 
