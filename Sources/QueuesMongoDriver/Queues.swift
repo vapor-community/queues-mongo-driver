@@ -86,7 +86,6 @@ class MongoQueue: Queue {
                                "status": "ready"],
                        update: ["$set": ["status": MongoJobStatus.processing.rawValue]],
                        returnValue: .modified)
-        .sort(["created": 1])
         .execute()
         .flatMapThrowing { reply in
             guard reply.ok == 1, let document = reply.value else {
