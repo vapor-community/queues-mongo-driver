@@ -86,6 +86,7 @@ class MongoQueue: Queue {
                                "status": "ready"],
                        update: ["$set": ["status": MongoJobStatus.processing.rawValue]],
                        returnValue: .modified)
+        .sort(["created": .ascending])
         .execute()
         .flatMapThrowing { reply in
             guard reply.ok == 1, let document = reply.value else {
@@ -96,13 +97,14 @@ class MongoQueue: Queue {
         }
     }
     
-    // Mark jobs that can't be finished as ready.
+    // Mark jobs that can't be finished as ready and reset the created date to put it to the back of the queue.
     func push(_ id: JobIdentifier) -> EventLoopFuture<Void> {
         mongodb["vapor_queue"]
         .findAndModify(where: ["jobid": id.string,
                                "queue": "\(context.queueName.string)",
                                "status": "processing"],
-                       update: ["$set": ["status": MongoJobStatus.ready.rawValue]])
+                       update: ["$set": ["status": MongoJobStatus.ready.rawValue,
+                                         "created": Date()] as Document])
         .execute()
         .transform(to: ())
     }
