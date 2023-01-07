@@ -5,17 +5,18 @@ import MongoKitten
 
 final class QueuesMongoDriverTests: XCTestCase {
     
-    func testExample() throws {
+    func testExample() async throws {
         let app = Application(.testing)
         defer { app.shutdown() }
 
         let email = Email()
         app.queues.add(email)
 
-        let mongoDatabase = try MongoDatabase.lazyConnect("mongodb://localhost:27017/queuesdriver",
-                                                          on: app.eventLoopGroup.next())
+        let mongoDatabase = try MongoDatabase.lazyConnect(
+            to: "mongodb://localhost:27017/queuesdriver"
+        )
         
-        try app.queues.setupMongo(using: mongoDatabase)
+        try await app.queues.setupMongo(using: mongoDatabase)
         
         app.queues.use(.mongodb(mongoDatabase))
 
@@ -29,7 +30,7 @@ final class QueuesMongoDriverTests: XCTestCase {
         }
         
         XCTAssertEqual(email.sent, [])
-        try app.queues.queue.worker.run().wait()
+        try await app.queues.queue.worker.run().get()
         XCTAssertEqual(email.sent, [.init(to: "mongo@database.driver")])
     }
 }
