@@ -3,7 +3,7 @@ import MongoKitten
 import Vapor
 
 extension Application.Queues {
-   public func setupMongo(using database: MongoDatabase) throws {
+   public func setupMongo(using database: MongoDatabase) async throws {
         // It's perfectly safe to call this without doing any additional checking because MongoDB will handle this for us.
         // 1. If the collection does not exist yet, mongodb will create one and add the index to it.
         // 2. If the index already exists on the collection, mongodb will just ignore the command.
@@ -11,7 +11,7 @@ extension Application.Queues {
         var index = CreateIndexes.Index(named: "job_index", keys: ["jobid": 1, "queue": 1])
         index.unique = true
         
-        try database["vapor_queue"].createIndexes([index]).wait()
+        try await database["vapor_queue"].createIndexes([index])
     }
 }
 
@@ -37,26 +37,40 @@ class MongoQueue: Queue {
     }
     
     func get(_ id: JobIdentifier) -> EventLoopFuture<JobData> {
-        mongodb["vapor_queue"]
-        .findOne(["jobid": id.string,
-                  "queue": "\(context.queueName.string)",
-                  "status": MongoJobStatus.processing.rawValue])
-        .decode(MongoJob.self)
-        .unwrap(or: QueuesMongoError.missingJob)
-        .map { $0.data }
+        let promise = context.eventLoop.makePromise(of: JobData.self)
+        promise.completeWithTask {
+            let job = try await self.mongodb["vapor_queue"].findOne(
+                ["jobid": id.string,
+                 "queue": "\(self.context.queueName.string)",
+                 "status": MongoJobStatus.processing.rawValue],
+                as: MongoJob.self
+            )
+            if let job = job {
+                return job.data
+            } else {
+                throw QueuesMongoError.missingJob
+            }
+        }
+        return promise.futureResult
     }
     
     func set(_ id: JobIdentifier, to data: JobData) -> EventLoopFuture<Void> {
         do {
-            let encoded = try BSONEncoder().encode(MongoJob(status: MongoJobStatus.ready,
-                                                            jobid: id.string,
-                                                            queue: context.queueName.string,
-                                                            data: data,
-                                                            created: Date()))
+            let job = MongoJob(
+                status: MongoJobStatus.ready,
+                jobid: id.string,
+                queue: context.queueName.string,
+                data: data,
+                created: Date()
+            )
+            let encoded = try BSONEncoder().encode(job)
             
-            return mongodb["vapor_queue"]
-            .insert(encoded)
-            .flatMap { _ in return self.context.eventLoop.future() }
+            let promise = context.eventLoop.makePromise(of: Void.self)
+            promise.completeWithTask {
+                try await self.mongodb["vapor_queue"].insert(encoded)
+                return
+            }
+            return promise.futureResult
         } catch {
             return self.context.eventLoop.makeFailedFuture(error)
         }
@@ -64,49 +78,79 @@ class MongoQueue: Queue {
     
     // Mark job as completed
     func clear(_ id: JobIdentifier) -> EventLoopFuture<Void> {
-        mongodb["vapor_queue"]
-        .findAndModify(where: ["jobid": id.string,
-                               "queue": "\(context.queueName.string)",
-                               "status": MongoJobStatus.processing.rawValue],
-                       update: ["$set": ["status": MongoJobStatus.completed.rawValue]],
-                       returnValue: .modified)
-        .execute()
-        .flatMap { reply in
+        let promise = context.eventLoop.makePromise(of: Void.self)
+        promise.completeWithTask {
+            let reply = try await self.mongodb["vapor_queue"].findAndModify(
+                where: [
+                    "jobid": id.string,
+                    "queue": "\(self.context.queueName.string)",
+                    "status": MongoJobStatus.processing.rawValue
+                ],
+                update: ["$set": ["status": MongoJobStatus.completed.rawValue]],
+                returnValue: .modified
+            )
+            .execute()
             guard reply.ok == 1 else {
-                return self.context.eventLoop.makeFailedFuture(reply)
+                throw reply
             }
-            return self.context.eventLoop.future()
+            return
         }
+        return promise.futureResult
     }
     
     // Mark oldest job as processing
     func pop() -> EventLoopFuture<JobIdentifier?> {
-        mongodb["vapor_queue"]
-        .findAndModify(where: ["queue": "\(context.queueName.string)",
-                               "status": "ready"],
-                       update: ["$set": ["status": MongoJobStatus.processing.rawValue]],
-                       returnValue: .modified)
-        .sort(["created": .ascending])
-        .execute()
-        .flatMapThrowing { reply in
+        let promise = context.eventLoop.makePromise(of: JobIdentifier?.self)
+        
+        promise.completeWithTask {
+            let reply = try await self.mongodb["vapor_queue"].findAndModify(
+                where: [
+                    "queue": "\(self.context.queueName.string)",
+                    "status": "ready"
+                ],
+                update: [
+                    "$set": [
+                        "status": MongoJobStatus.processing.rawValue
+                    ]
+                ],
+                returnValue: .modified
+            )
+                .sort(["created": .ascending])
+                .execute()
+            
             guard reply.ok == 1, let document = reply.value else {
                 return nil
             }
             let job = try BSONDecoder().decode(MongoJob.self, from: document)
             return JobIdentifier(string: job.jobid)
         }
+        
+        return promise.futureResult
     }
     
     // Mark jobs that can't be finished as ready and reset the created date to put it to the back of the queue.
     func push(_ id: JobIdentifier) -> EventLoopFuture<Void> {
-        mongodb["vapor_queue"]
-        .findAndModify(where: ["jobid": id.string,
-                               "queue": "\(context.queueName.string)",
-                               "status": "processing"],
-                       update: ["$set": ["status": MongoJobStatus.ready.rawValue,
-                                         "created": Date()] as Document])
-        .execute()
-        .transform(to: ())
+        let promise = context.eventLoop.makePromise(of: Void.self)
+        promise.completeWithTask {
+            _ = try await self.mongodb["vapor_queue"]
+                .findAndModify(
+                    where: [
+                        "jobid": id.string,
+                        "queue": "\(self.context.queueName.string)",
+                        "status": "processing"
+                    ],
+                    update: [
+                        "$set": [
+                            "status": MongoJobStatus.ready.rawValue,
+                            "created": Date()
+                        ] as Document
+                    ]
+                )
+                .execute()
+            return
+        }
+        
+        return promise.futureResult
     }
 }
 
